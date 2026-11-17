@@ -1,0 +1,520 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isMasterEmail() {
+      return isVerified() && request.auth.token.email == '12410288@student.unklab.ac.id';
+    }
+
+    function userDocExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isVerified() && (
+        isMasterEmail() ||
+        (userDocExists() && userDoc().get('status', 'active') == 'active')
+      );
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        isMasterEmail() ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+          userDocExists() &&
+          userDoc().role == 'admin' &&
+          userDoc().get('status', 'active') == 'active'
+        )
+      );
+    }
+
+    function isEditorRole() {
+      return isActiveUser() && (
+        isAdmin() ||
+        (userDocExists() && userDoc().role == 'editor' && userDoc().get('status', 'active') == 'active')
+      );
+    }
+
+    function isOwnerOfExisting() {
+      return isSignedIn() && existing().get('createdBy', existing().authorId) == request.auth.uid;
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUser(data, userId) {
+      return data.keys().hasAll(['id', 'email', 'displayName', 'role', 'status']) &&
+        data.keys().hasOnly(['id', 'email', 'displayName', 'role', 'status', 'department', 'photoURL', 'createdAt', 'updatedAt']) &&
+        data.id == userId &&
+        isValidId(data.id) &&
+        data.email is string && data.email.size() <= 256 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 128 &&
+        data.role in ['admin', 'editor', 'member'] &&
+        data.status in ['active', 'inactive'] &&
+        isOptionalString(data, 'department', 128) &&
+        isOptionalString(data, 'photoURL', 1024) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidAdminMarker(data) {
+      return data.keys().hasOnly(['uid', 'email', 'grantedAt', 'updated']) &&
+        isOptionalString(data, 'uid', 128) &&
+        isOptionalString(data, 'email', 256) &&
+        isOptionalString(data, 'grantedAt', 64) &&
+        isOptionalString(data, 'updated', 64);
+    }
+
+    function isValidKnowledge(data, articleId) {
+      return data.keys().hasAll(['id', 'title', 'content', 'categoryId', 'authorId', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'content', 'summary', 'categoryId', 'categoryName',
+          'department', 'knowledgeType', 'tags', 'createdBy', 'authorId',
+          'authorName', 'authorEmail', 'status', 'viewsCount', 'bookmarkCount',
+          'attachments', 'isSOP', 'sopNumber', 'purpose', 'scope',
+          'responsibilities', 'references', 'reviewer', 'approver',
+          'approvedBy', 'approvedAt', 'rejectedReason', 'effectiveDate',
+          'reviewDate', 'revisionNumber', 'revisionHistory', 'sopSteps',
+          'targetCommittee', 'indexStatus', 'indexError', 'indexedChunksCount',
+          'lastIndexedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == articleId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 256 &&
+        data.content is string && data.content.size() >= 10 && data.content.size() <= 50000 &&
+        isValidId(data.categoryId) &&
+        isValidId(data.authorId) &&
+        (!('createdBy' in data) || isValidId(data.createdBy)) &&
+        data.status in ['published', 'draft', 'archived', 'pending_review', 'in_review', 'approved', 'rejected'] &&
+        isOptionalString(data, 'summary', 500) &&
+        isOptionalString(data, 'categoryName', 128) &&
+        isOptionalString(data, 'department', 128) &&
+        isOptionalString(data, 'knowledgeType', 64) &&
+        isOptionalString(data, 'authorName', 128) &&
+        isOptionalString(data, 'authorEmail', 256) &&
+        (!('viewsCount' in data) || (data.viewsCount is number && data.viewsCount >= 0)) &&
+        (!('bookmarkCount' in data) || (data.bookmarkCount is number && data.bookmarkCount >= 0)) &&
+        (!('isSOP' in data) || data.isSOP is bool) &&
+        isOptionalString(data, 'sopNumber', 64) &&
+        isOptionalString(data, 'purpose', 5000) &&
+        isOptionalString(data, 'scope', 5000) &&
+        isOptionalString(data, 'responsibilities', 5000) &&
+        isOptionalString(data, 'references', 5000) &&
+        isOptionalString(data, 'reviewer', 128) &&
+        isOptionalString(data, 'approver', 128) &&
+        isOptionalString(data, 'approvedBy', 128) &&
+        isOptionalString(data, 'approvedAt', 64) &&
+        isOptionalString(data, 'rejectedReason', 1000) &&
+        isOptionalString(data, 'effectiveDate', 64) &&
+        isOptionalString(data, 'reviewDate', 64) &&
+        isOptionalString(data, 'revisionNumber', 32) &&
+        isOptionalString(data, 'targetCommittee', 128) &&
+        (!('indexStatus' in data) || data.indexStatus in ['pending', 'processing', 'indexed', 'failed']) &&
+        isOptionalString(data, 'indexError', 1000) &&
+        (!('indexedChunksCount' in data) || (data.indexedChunksCount is number && data.indexedChunksCount >= 0)) &&
+        isOptionalString(data, 'lastIndexedAt', 64) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64) &&
+        (!('tags' in data) || (data.tags is list && data.tags.size() <= 20 && (data.tags.size() == 0 || data.tags[0] is string))) &&
+        (!('attachments' in data) || (data.attachments is list && data.attachments.size() <= 20)) &&
+        (!('sopSteps' in data) || (data.sopSteps is list && data.sopSteps.size() <= 50)) &&
+        (!('revisionHistory' in data) || (data.revisionHistory is list && data.revisionHistory.size() <= 20));
+    }
+
+    function isValidCategory(data, categoryId) {
+      return data.keys().hasAll(['id', 'name', 'slug']) &&
+        data.keys().hasOnly(['id', 'name', 'description', 'icon', 'slug', 'articleCount', 'createdAt', 'updatedAt']) &&
+        data.id == categoryId &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 128 &&
+        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 128 &&
+        isOptionalString(data, 'description', 500) &&
+        isOptionalString(data, 'icon', 64) &&
+        (!('articleCount' in data) || (data.articleCount is number && data.articleCount >= 0)) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidDocument(data, documentId) {
+      return data.keys().hasAll(['id', 'title', 'fileUrl', 'fileName', 'authorId']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'categoryId', 'categoryName',
+          'fileUrl', 'storagePath', 'fileName', 'fileSize', 'fileType',
+          'createdBy', 'authorId', 'authorName', 'downloadsCount',
+          'indexStatus', 'indexError', 'indexedChunksCount', 'lastIndexedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == documentId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 256 &&
+        isOptionalString(data, 'description', 1000) &&
+        isOptionalString(data, 'categoryId', 128) &&
+        isOptionalString(data, 'categoryName', 128) &&
+        data.fileUrl is string && data.fileUrl.size() >= 1 && data.fileUrl.size() <= 200000 &&
+        isOptionalString(data, 'storagePath', 512) &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 256 &&
+        (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0)) &&
+        isOptionalString(data, 'fileType', 64) &&
+        (!('createdBy' in data) || isValidId(data.createdBy)) &&
+        isValidId(data.authorId) &&
+        isOptionalString(data, 'authorName', 128) &&
+        (!('downloadsCount' in data) || (data.downloadsCount is number && data.downloadsCount >= 0)) &&
+        (!('indexStatus' in data) || data.indexStatus in ['pending', 'processing', 'indexed', 'failed']) &&
+        isOptionalString(data, 'indexError', 1000) &&
+        (!('indexedChunksCount' in data) || (data.indexedChunksCount is number && data.indexedChunksCount >= 0)) &&
+        isOptionalString(data, 'lastIndexedAt', 64) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidFileChunk(data, chunkId) {
+      return data.keys().hasAll(['id', 'groupId', 'index', 'data', 'createdBy']) &&
+        data.keys().hasOnly(['id', 'groupId', 'index', 'data', 'createdBy', 'createdAt']) &&
+        data.id == chunkId &&
+        isValidId(data.id) &&
+        isValidId(data.groupId) &&
+        data.index is number && data.index >= 0 &&
+        data.data is string && data.data.size() >= 1 && data.data.size() <= 600000 &&
+        isValidId(data.createdBy) &&
+        isOptionalString(data, 'createdAt', 64);
+    }
+
+    function isValidEvent(data, eventId) {
+      return data.keys().hasAll(['id', 'title', 'date', 'committee', 'authorId']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'date', 'academicYear',
+          'committee', 'outcomes', 'documentationUrl', 'reports',
+          'evaluation', 'createdBy', 'authorId', 'authorName',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == eventId &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 256 &&
+        isOptionalString(data, 'description', 5000) &&
+        data.date is string && data.date.size() <= 64 &&
+        isOptionalString(data, 'academicYear', 32) &&
+        data.committee is string && data.committee.size() >= 1 && data.committee.size() <= 128 &&
+        isOptionalString(data, 'outcomes', 5000) &&
+        isOptionalString(data, 'documentationUrl', 2048) &&
+        (!('reports' in data) || (data.reports is list && data.reports.size() <= 20)) &&
+        isOptionalString(data, 'evaluation', 5000) &&
+        (!('createdBy' in data) || isValidId(data.createdBy)) &&
+        isValidId(data.authorId) &&
+        isOptionalString(data, 'authorName', 128) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidLesson(data, lessonId) {
+      return data.keys().hasAll(['id', 'activityTitle', 'challenges', 'solutions', 'recommendations', 'impactLevel', 'authorId']) &&
+        data.keys().hasOnly([
+          'id', 'activityTitle', 'categoryId', 'categoryName',
+          'challenges', 'solutions', 'recommendations', 'impactLevel',
+          'createdBy', 'authorId', 'authorName', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == lessonId &&
+        isValidId(data.id) &&
+        data.activityTitle is string && data.activityTitle.size() >= 3 && data.activityTitle.size() <= 256 &&
+        isOptionalString(data, 'categoryId', 128) &&
+        isOptionalString(data, 'categoryName', 128) &&
+        data.challenges is string && data.challenges.size() >= 1 && data.challenges.size() <= 5000 &&
+        data.solutions is string && data.solutions.size() >= 1 && data.solutions.size() <= 5000 &&
+        data.recommendations is string && data.recommendations.size() >= 1 && data.recommendations.size() <= 5000 &&
+        data.impactLevel in ['low', 'medium', 'high'] &&
+        (!('createdBy' in data) || isValidId(data.createdBy)) &&
+        isValidId(data.authorId) &&
+        isOptionalString(data, 'authorName', 128) &&
+        isOptionalString(data, 'createdAt', 64) &&
+        isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidBookmark(data, bookmarkId) {
+      return data.keys().hasAll(['id', 'userId', 'targetId', 'targetType', 'title']) &&
+        data.keys().hasOnly(['id', 'userId', 'targetId', 'targetType', 'title', 'createdAt']) &&
+        data.id == bookmarkId &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.targetId) &&
+        data.targetType in ['knowledge', 'document', 'sop', 'lesson'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 256 &&
+        isOptionalString(data, 'createdAt', 64);
+    }
+
+    function isValidActivityLog(data, logId) {
+      return data.keys().hasAll(['id', 'userId', 'action', 'entityType']) &&
+        data.keys().hasOnly(['id', 'userId', 'userName', 'userEmail', 'action', 'entityType', 'entityId', 'details', 'createdAt']) &&
+        data.id == logId &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isOptionalString(data, 'userName', 128) &&
+        isOptionalString(data, 'userEmail', 256) &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 128 &&
+        data.entityType in ['knowledge', 'document', 'event', 'lesson', 'user', 'category'] &&
+        isOptionalString(data, 'entityId', 128) &&
+        isOptionalString(data, 'details', 1000) &&
+        isOptionalString(data, 'createdAt', 64);
+    }
+
+    // --- Admins collection ---
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow create, update: if isValidId(userId) && isValidAdminMarker(incoming()) && (
+        isAdmin() ||
+        (request.auth.uid == userId && isMasterEmail())
+      );
+      allow delete: if isValidId(userId) && isAdmin() && request.auth.uid != userId;
+    }
+
+    // --- Users collection (PII isolated to owner & active Admins) ---
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isVerified() && request.auth.uid == userId &&
+        isValidUser(incoming(), userId) &&
+        (
+          (incoming().role == 'member' && incoming().status == 'active') ||
+          (isMasterEmail() && incoming().role == 'admin' && incoming().status == 'active')
+        );
+      allow update: if isValidId(userId) && isVerified() &&
+        isValidUser(incoming(), userId) &&
+        incoming().id == existing().id &&
+        incoming().email == existing().email &&
+        (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'status', 'updatedAt']) &&
+            !(request.auth.uid == userId && (incoming().role != 'admin' || incoming().status != 'active'))
+          ) ||
+          (
+            request.auth.uid == userId &&
+            isActiveUser() &&
+            incoming().role == existing().role &&
+            (
+              incoming().status == existing().status ||
+              (!('status' in existing()) && incoming().status == 'active')
+            ) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'department', 'photoURL', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin() && request.auth.uid != userId;
+    }
+
+    // --- Knowledge Articles & SOPs ---
+    match /knowledge/{articleId} {
+      allow get: if isValidId(articleId) && isActiveUser() && (
+        existing().status == 'published' ||
+        isAdmin() ||
+        (isEditorRole() && isOwnerOfExisting())
+      );
+      allow list: if isActiveUser() && (
+        resource.data.status == 'published' ||
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.authorId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isValidId(articleId) && isValidKnowledge(incoming(), articleId) &&
+        isEditorRole() &&
+        ('createdBy' in incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().authorId == request.auth.uid;
+      allow update: if isValidId(articleId) && isValidKnowledge(incoming(), articleId) && isActiveUser() && (
+        (
+          isAdmin() &&
+          incoming().createdBy == existing().get('createdBy', incoming().createdBy) &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          isEditorRole() &&
+          isOwnerOfExisting() &&
+          incoming().get('createdBy', incoming().authorId) == existing().get('createdBy', existing().authorId) &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['viewsCount']) &&
+          incoming().viewsCount is number &&
+          incoming().viewsCount == existing().viewsCount + 1
+        ) ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['bookmarkCount']) &&
+          incoming().bookmarkCount is number &&
+          incoming().bookmarkCount >= 0
+        )
+      );
+      allow delete: if isValidId(articleId) && isActiveUser() && (
+        isAdmin() ||
+        (isEditorRole() && isOwnerOfExisting())
+      );
+    }
+
+    // --- Categories / Divisions ---
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create, update: if isValidId(categoryId) && isValidCategory(incoming(), categoryId) && isAdmin();
+      allow delete: if isValidId(categoryId) && isAdmin();
+    }
+
+    // --- Documents Repository ---
+    match /documents/{documentId} {
+      allow get: if isValidId(documentId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create: if isValidId(documentId) && isValidDocument(incoming(), documentId) &&
+        isEditorRole() &&
+        ('createdBy' in incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().authorId == request.auth.uid;
+      allow update: if isValidId(documentId) && isValidDocument(incoming(), documentId) && isActiveUser() && (
+        (
+          isAdmin() &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          isEditorRole() &&
+          isOwnerOfExisting() &&
+          incoming().get('createdBy', incoming().authorId) == existing().get('createdBy', existing().authorId) &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['downloadsCount']) &&
+          incoming().downloadsCount is number &&
+          incoming().downloadsCount == existing().downloadsCount + 1
+        )
+      );
+      allow delete: if isValidId(documentId) && isActiveUser() && (
+        isAdmin() ||
+        (isEditorRole() && isOwnerOfExisting())
+      );
+    }
+
+    // --- Chunked File Blobs ---
+    match /file_chunks/{chunkId} {
+      allow get: if isValidId(chunkId) && isActiveUser();
+      allow list: if false;
+      allow create: if isValidId(chunkId) && isValidFileChunk(incoming(), chunkId) &&
+        isEditorRole() &&
+        incoming().createdBy == request.auth.uid;
+      allow update: if false;
+      allow delete: if isValidId(chunkId) && isActiveUser() && (
+        isAdmin() ||
+        (isEditorRole() && existing().get('createdBy', '') == request.auth.uid)
+      );
+    }
+
+    // --- Events Archive ---
+    match /events/{eventId} {
+      allow get: if isValidId(eventId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create: if isValidId(eventId) && isValidEvent(incoming(), eventId) &&
+        isEditorRole() &&
+        ('createdBy' in incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().authorId == request.auth.uid;
+      allow update: if isValidId(eventId) && isValidEvent(incoming(), eventId) && isActiveUser() && (
+        (
+          isAdmin() &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          isEditorRole() &&
+          isOwnerOfExisting() &&
+          incoming().get('createdBy', incoming().authorId) == existing().get('createdBy', existing().authorId) &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        )
+      );
+      allow delete: if isValidId(eventId) && isActiveUser() && (
+        isAdmin() ||
+        (isEditorRole() && isOwnerOfExisting())
+      );
+    }
+
+    // --- Lessons Learned ---
+    match /lessons_learned/{lessonId} {
+      allow get: if isValidId(lessonId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create: if isValidId(lessonId) && isValidLesson(incoming(), lessonId) &&
+        isEditorRole() &&
+        ('createdBy' in incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().authorId == request.auth.uid;
+      allow update: if isValidId(lessonId) && isValidLesson(incoming(), lessonId) && isActiveUser() && (
+        (
+          isAdmin() &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        ) ||
+        (
+          isEditorRole() &&
+          isOwnerOfExisting() &&
+          incoming().get('createdBy', incoming().authorId) == existing().get('createdBy', existing().authorId) &&
+          incoming().authorId == existing().authorId &&
+          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        )
+      );
+      allow delete: if isValidId(lessonId) && isActiveUser() && (
+        isAdmin() ||
+        (isEditorRole() && isOwnerOfExisting())
+      );
+    }
+
+    // --- Bookmarks (Strictly scoped to owner) ---
+    match /bookmarks/{bookmarkId} {
+      allow get: if isValidId(bookmarkId) && isActiveUser() && existing().userId == request.auth.uid;
+      allow list: if isActiveUser() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(bookmarkId) && isValidBookmark(incoming(), bookmarkId) &&
+        isActiveUser() &&
+        incoming().userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isValidId(bookmarkId) && isActiveUser() && existing().userId == request.auth.uid;
+    }
+
+    // --- Activity Logs (Append-only) ---
+    match /activity_logs/{logId} {
+      allow get: if isValidId(logId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create: if isValidId(logId) && isValidActivityLog(incoming(), logId) &&
+        isActiveUser() &&
+        incoming().userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
