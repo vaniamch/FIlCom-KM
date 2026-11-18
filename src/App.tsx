@@ -181,6 +181,7 @@ function MainApp() {
     currentUser,
     userProfile,
     loading: authLoading,
+    authError,
     isAdmin,
     isEditor,
     isDeactivated,
@@ -261,7 +262,7 @@ function MainApp() {
 
   // Load Database Records (Authenticated & Active users only)
   const loadAllData = useCallback(async () => {
-    if (!currentUser || isDeactivated) {
+    if (!currentUser || !userProfile || isDeactivated) {
       clearWorkspaceState();
       return;
     }
@@ -269,9 +270,7 @@ function MainApp() {
     setDataLoading(true);
     try {
       const [arts, cats, docs, evts, lsns, logs, bms] = await Promise.all([
-        getArticles({
-          viewer: { role: userProfile?.role || 'member', uid: currentUser.uid },
-        }),
+        getArticles(),
         getCategories(),
         getDocuments(),
         getEvents(),
@@ -292,7 +291,7 @@ function MainApp() {
     } finally {
       setDataLoading(false);
     }
-  }, [currentUser, isDeactivated, userProfile?.role, clearWorkspaceState]);
+  }, [currentUser, userProfile, isDeactivated, clearWorkspaceState]);
 
   // Browser back/forward popstate listener
   useEffect(() => {
@@ -328,8 +327,9 @@ function MainApp() {
   // Strict Auth & Route Protection Gate
   useEffect(() => {
     if (authLoading) return;
+    if (currentUser && !userProfile && !authError) return;
 
-    if (!currentUser || isDeactivated) {
+    if (!currentUser || !userProfile || isDeactivated) {
       clearWorkspaceState();
       if (currentPage !== 'landing') {
         if (!currentUser && !pendingRoute) {
@@ -343,6 +343,8 @@ function MainApp() {
         setIsAuthModalOpen(true);
         if (isDeactivated) {
           showToast('Your account has been deactivated by an administrator.', 'error');
+        } else if (authError) {
+          showToast(authError, 'error');
         }
       }
       return;
@@ -375,6 +377,8 @@ function MainApp() {
   }, [
     authLoading,
     currentUser,
+    userProfile,
+    authError,
     isDeactivated,
     isAdmin,
     currentPage,
@@ -851,7 +855,7 @@ function MainApp() {
   ).length;
 
   // Wait for auth hydration when landing on a protected URL so authenticated refreshes don't flash Landing
-  if (authLoading && currentPage !== 'landing') {
+  if ((authLoading || (currentUser && !userProfile && !authError)) && currentPage !== 'landing') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#ebf1fd] via-[#f3f6fe] to-[#e7edfa] flex items-center justify-center">
         <div className="text-center space-y-3">
@@ -862,8 +866,8 @@ function MainApp() {
     );
   }
 
-  // Public Landing Page (and hard fallback when unauthenticated or deactivated)
-  if (currentPage === 'landing' || !currentUser || isDeactivated) {
+  // Public Landing Page (and hard fallback when unauthenticated, unhydrated, or deactivated)
+  if (currentPage === 'landing' || !currentUser || !userProfile || isDeactivated) {
     return (
       <div className="min-h-screen w-full bg-[#dce4f6] text-slate-900">
         <LandingPage

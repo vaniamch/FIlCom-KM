@@ -3,6 +3,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  getDocFromServer,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -37,22 +38,56 @@ interface CallerContext {
   status: UserStatus;
 }
 
-async function requireActiveCaller(): Promise<CallerContext> {
+function normalizeCallerRole(rawRole: unknown, isMaster: boolean): UserRole {
+  if (isMaster) return 'admin';
+  const normalized = typeof rawRole === 'string' ? rawRole.trim().toLowerCase() : '';
+  if (normalized === 'admin' || normalized === 'editor' || normalized === 'member') {
+    return normalized;
+  }
+  return 'member';
+}
+
+function normalizeCallerStatus(rawStatus: unknown, isMaster: boolean): UserStatus {
+  if (isMaster) return 'active';
+  const normalized = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
+  if (normalized === 'inactive') return 'inactive';
+  return 'active';
+}
+
+async function requireActiveCaller(forceServer: boolean = false): Promise<CallerContext> {
   const fbUser = auth.currentUser;
   if (!fbUser) {
     throw new Error('Authentication required. Please sign in to continue.');
   }
 
   const isMaster = fbUser.email?.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
-  const snap = await getDoc(doc(db, 'users', fbUser.uid)).catch(() => null);
+  const userRef = doc(db, 'users', fbUser.uid);
+
+  let snap = null;
+  if (forceServer) {
+    try {
+      snap = await getDocFromServer(userRef);
+    } catch (err: any) {
+      const code = String(err?.code || '').toLowerCase();
+      const message = String(err?.message || '').toLowerCase();
+      if (code === 'unavailable' || message.includes('offline')) {
+        snap = await getDoc(userRef).catch(() => null);
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    snap = await getDoc(userRef).catch(() => null);
+  }
+
   const profile = snap?.exists() ? (snap.data() as UserProfile) : null;
 
-  const status: UserStatus = profile?.status || 'active';
+  const status = normalizeCallerStatus(profile?.status, isMaster);
   if (status === 'inactive' && !isMaster) {
     throw new Error('Your account has been deactivated by an administrator.');
   }
 
-  const role: UserRole = isMaster ? 'admin' : profile?.role || 'member';
+  const role = normalizeCallerRole(profile?.role, isMaster);
   return {
     uid: fbUser.uid,
     email: fbUser.email || '',
@@ -62,7 +97,7 @@ async function requireActiveCaller(): Promise<CallerContext> {
 }
 
 async function requireEditorOrAdmin(): Promise<CallerContext> {
-  const caller = await requireActiveCaller();
+  const caller = await requireActiveCaller(true);
   if (caller.role !== 'admin' && caller.role !== 'editor') {
     throw new Error('Permission denied: Member accounts have read-only access.');
   }
@@ -70,7 +105,7 @@ async function requireEditorOrAdmin(): Promise<CallerContext> {
 }
 
 async function requireAdmin(): Promise<CallerContext> {
-  const caller = await requireActiveCaller();
+  const caller = await requireActiveCaller(true);
   if (caller.role !== 'admin') {
     throw new Error('Permission denied: Administrator privileges are required.');
   }
@@ -165,9 +200,9 @@ export async function getArticles(params?: {
   viewer?: { role?: UserRole; uid?: string };
 }): Promise<KnowledgeArticle[]> {
   try {
-    const caller = await requireActiveCaller();
-    const effectiveRole = params?.viewer?.role || caller.role;
-    const effectiveUid = params?.viewer?.uid || caller.uid;
+    const caller = await requireActiveCaller(true);
+    const effectiveRole = caller.role;
+    const effectiveUid = caller.uid;
     const colRef = collection(db, 'knowledge');
 
     let items: KnowledgeArticle[] = [];
@@ -826,8 +861,17 @@ export async function getAllUsers(): Promise<UserProfile[]> {
     await requireAdmin();
     const snap = await getDocs(collection(db, 'users'));
     return snap.docs.map((d) => {
-      const data = d.data() as UserProfile;
-      return { ...data, id: d.id, status: data.status || 'active' };
+      const data = d.data() as Partial<UserProfile>;
+      const isMaster = data.email?.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
+      return {
+        ...data,
+        id: d.id,
+        email: data.email || '',
+        displayName: data.displayName || data.email || 'Student Member',
+        role: normalizeCallerRole(data.role, isMaster),
+        status: normalizeCallerStatus(data.status, isMaster),
+        createdAt: data.createdAt || new Date().toISOString(),
+      };
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, 'users');
